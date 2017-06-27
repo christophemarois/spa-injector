@@ -36,12 +36,21 @@ const intercept = require('./lib/intercept')
  * @param {String} [options.namespace] Name of the global variable the object will be injected in
  */
 module.exports = function spaInjector (express, fn, options = {}) {
-  const { devHost, distPath, env, historyOptions, isInterceptable, namespace } = Object.assign({
+  const {
+    devHost,
+    distPath,
+    env,
+    historyOptions,
+    isInterceptable,
+    routes,
+    namespace
+  } = Object.assign({
     devHost: 'http://localhost:8080/',
     distPath: './dist',
     env: process.env.NODE_ENV,
     historyOptions: {},
     isInterceptable: res => /text\/html/.test(res.get('Content-Type')),
+    routes: [],
     namespace: 'globals'
   }, options)
 
@@ -66,16 +75,23 @@ module.exports = function spaInjector (express, fn, options = {}) {
   // HTML5 History fallback in production
   if (env === 'production') middleware.use(history(historyOptions))
 
-  // Inject fn() results in body before </head> and remove etag header on
-  // "text/html" Content-Type responses
-  middleware.use(intercept(function bodyFn (buffer, req, res) {
+  // Inject fn() results in body before </head> and remove etag header
+  const interceptor = intercept(function bodyFn (buffer, req, res) {
     return isInterceptable(res) ? inject(buffer.toString(), req) : buffer
   }, function headersFn () {
     if (isInterceptable(this)) {
       this.removeHeader('ETag')
       this.removeHeader('etag')
     }
-  }))
+  })
+
+  if (routes.length > 0) {
+    for (let route of routes) {
+      middleware.get(route, interceptor)
+    }
+  } else {
+    middleware.use(interceptor)
+  }
 
   if (env === 'production') {
     middleware.use(express.static(distPath))
