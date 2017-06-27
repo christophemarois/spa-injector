@@ -1,6 +1,6 @@
 {
   "name": "spa-injector",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Express middleware that serves single Page Apps and injects asynchronously-generated variables in their HTML pages",
   "main": "index.js",
   "repository": "https://www.github.com/christophemarois/spa-injector",
