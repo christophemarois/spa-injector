@@ -1,96 +1,80 @@
 const fs = require('fs')
 const path = require('path')
+const url = require('url')
 
-const history = require('connect-history-api-fallback')
 const httpProxy = require('http-proxy')
-
-const intercept = require('./lib/intercept')
-
-/**
- * @name isInterceptableFn
- * @function
- * Determines if a request is interceptable
- *
- * @param {Object} res
- * @return {Boolean} whether to intercept the request or not
- */
+const fetch = require('node-fetch')
 
 /**
  * Express middleware that serves single Page Apps and injects
  * asynchronously-generated variables in their HTML pages.
  *
- * In development: proxies and transforms the `devHost` host
- *
- * In production: transforms HTML, serves the rest as static and handles
- * HTML5 History fallbacks with @bripkens/connect-history-api-fallback
- *
- * @param {Object} express Uninstantialized Express module
- * @param {fnCallback} fn Function that either returns a value or a promise whose
+ * @param {Function} fn Function that either returns a value or a promise whose
  *   value will be injected in HTML pages. Receives the `req` object as argument.
+ * @param {Function} express Uninstantialized Express module
  * @param {Object} [options]
  * @param {String} [options.devHost] Hostname of the server proxied in development
  * @param {String} [options.distPath] Path of the built static files
+ * @param {String} [options.entry] Entry filename
  * @param {String} [options.env] Environment to use. If not "production", will default to development
- * @param {String} [options.historyOptions] Options passed to connect-history-api-fallback
- * @param {isInterceptableFn} [options.isInterceptable] Determines if a response is interceptable
  * @param {String} [options.namespace] Name of the global variable the object will be injected in
  */
-module.exports = function spaInjector (express, fn, options = {}) {
-  const {
-    devHost,
-    distPath,
-    env,
-    historyOptions,
-    isInterceptable,
-    routes,
-    namespace
-  } = Object.assign({
+module.exports = function spaInjector (fn, express, options = {}) {
+  if (!(fn instanceof Function)) throw new Error('Argument "fn" should be a function')
+  if (!(express instanceof Function)) throw new Error('Argument "express" should be a function')
+
+  const { devHost, devPath, distPath, env, entry, routes, namespace } = Object.assign({
     devHost: 'http://localhost:8080/',
-    distPath: './dist',
+    distPath: './client/dist',
+    entry: 'index.html',
     env: process.env.NODE_ENV,
-    historyOptions: {},
-    isInterceptable: res => /text\/html/.test(res.get('Content-Type')),
-    routes: [],
-    namespace: 'globals'
+    routes: ['/'],
+    namespace: 'static'
   }, options)
 
-  if (!(fn instanceof Function)) throw new Error('Argument "fn" should be a function')
-  if (!distPath) throw new Error('Argument "distPath" must be defined')
+  let entryHtml
 
-  // Injects the object returned by the promise returned by fn()
-  // in window[namespace] by wrapping it in a script tag
-  const inject = async (html, req) => {
-    const obj = await fn(req)
-    const tag = `<script>window['${namespace}'] = ${JSON.stringify(obj) || '{}'};</script>`
+  // If we're in production, read the production HTML from filesystem
+  if (env === 'production') {
+    const entryFilePath = path.resolve(distPath, entry)
 
-    const index = html.indexOf('</head>')
-    if (index < 0) return html
-
-    return html.slice(0, index) + '\n\n' + tag + '\n' + html.slice(index)
+    try {
+      entryHtml = fs.readFileSync(entryFilePath, 'utf-8')
+    } catch (err) {
+      throw new Error(`Could not read entry file "${entryFilePath}"`)
+    }
   }
 
   // Create the middleware that will be returned
   const middleware = express.Router()
 
-  // HTML5 History fallback in production
-  if (env === 'production') middleware.use(history(historyOptions))
-
-  // Inject fn() results in body before </head> and remove etag header
-  const interceptor = intercept(function bodyFn (buffer, req, res) {
-    return isInterceptable(res) ? inject(buffer.toString(), req) : buffer
-  }, function headersFn () {
-    if (isInterceptable(this)) {
-      this.removeHeader('ETag')
-      this.removeHeader('etag')
+  // Injects the object returned by the promise returned by fn()
+  // in window[namespace] by wrapping it in a script tag
+  const serveAndTransformEntry = async (req, res, next) => {
+    if (!entryHtml) {
+      const entryFileUrl = url.resolve(devHost, entry)
+      entryHtml = await fetch(entryFileUrl).then(resp => resp.text())
     }
-  })
 
-  if (routes.length > 0) {
-    for (let route of routes) {
-      middleware.get(route, interceptor)
+    let html = entryHtml
+
+    const json = JSON.stringify(await fn()) || '{}'
+    const tag = `<script>;window['${namespace}'] = ${json};</script>`
+
+    const index = html.indexOf('</head>')
+
+    if (index >= 0) {
+      html = html.slice(0, index) + '\n\n' + tag + '\n' + html.slice(index)
+    } else {
+      throw new Error(`No </head> found in "${entryFilePath}"`)
     }
-  } else {
-    middleware.use(interceptor)
+
+    res.removeHeader('etag')
+    res.status(200).send(html)
+  }
+
+  for (let route of routes) {
+    middleware.get(route, serveAndTransformEntry)
   }
 
   if (env === 'production') {
