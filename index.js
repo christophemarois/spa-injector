@@ -57,17 +57,13 @@ module.exports = function spaInjector (fn, express, options = {}) {
     }
 
     let html = entryHtml
+    const data = await fn(req)
 
-    const json = JSON.stringify(await fn()) || '{}'
-    const tag = `<script>;window['${namespace}'] = ${json};</script>`
+    let script = `<script type="text/javascript">
+      window['${namespace}'] = ${JSON.stringify(data) || '{}'};
+    </script>`
 
-    const index = html.indexOf('</head>')
-
-    if (index >= 0) {
-      html = html.slice(0, index) + '\n\n' + tag + '\n' + html.slice(index)
-    } else {
-      throw new Error(`No </head> found in "${entryFilePath}"`)
-    }
+    html = html.replace('</head>', script + '</head>')
 
     res.removeHeader('etag')
     res.status(200).send(html)
